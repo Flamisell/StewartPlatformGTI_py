@@ -21,8 +21,9 @@ The big advantage of this paper is the possibility to optimise the joint configu
 This repository focuses on replicating the analysis presented in the referenced paper.  
 First, a brief explanation of screw theory, which serves as the foundation for this paper, is provided. Then, the explained step-by-step procedure outlined in the paper is carefully implemented.
 
-## Table of Contents
 
+## Table of Contents
+---
 - [Explanation of Screw Theory and Global Transmission Index](#explanation-of-screw-theory-and-global-transmission-index) 
 - [Procedure](#procedure)
   - [Step1: Definition of the Space Docking Mechanism](#step1-definition-of-the-space-docking-mechanism)
@@ -32,7 +33,8 @@ First, a brief explanation of screw theory, which serves as the foundation for t
   - [Step5: Fathom out the OATI when the configuration and position of the manipulator are constant](#step5-fathom-out-the-aoti-when-the-configuration-and-position-of-the-manipulator-are-constant)
   - [Step6: work out the GTIc when the configuration of the manipulator is given](#step6-work-out-the-gtic-when-the-configuration-of-the-manipulator-is-given)
   - [Step7: seek the optimal configuration for manipulator based on the GTIc](#step7-seek-the-optimal-configuration-for-the-manipulator-based-on-gtic)
-- [Class Methods Overview](#class-methods-overview)
+
+
 
 ## Explanation of Screw Theory and Global Transmission Index
 Super quick review of Screw Theory.
@@ -60,35 +62,320 @@ We can then integrate the transmission index TI , in the whole workspace to obta
 <img src="https://github.com/user-attachments/assets/52922e48-77cf-406b-afbc-8c16aec35cf1" width="450" />
 
 
-## Installation
-
-Ensure you have the required libraries:
-
-```bash
-import numpy as np
-from scipy.spatial.transform import Rotation as R
-import matplotlib.pyplot as plt
-from google.colab import drive
-from scipy.spatial.distance import cdist
-
-```
-
 ## Procedure
 
 ### Step1: Definition of the Space Docking Mechanism
-The steps to obtain an offline set of singular configurations is presented here below.
+In this paper a procedure for finding the optimal configuration for the Space Docking Mechanism is carried out.
+For the space docking mechanism, the moving platform circle must conform to the international standard, so r_p is set as 0.363m. To calculate the GTI in the whole workspace of the manipulator, we must determine the appropriate zero position first. Here, we also **assume** the configuration parameter of the manipulator is: [r_b, phi_p , phi_b]= [0.307m, 100°, 60°].
+The position of the platform in space is also set to [x, y, z, R, P, Y]= [0, 0.0, 0.2, 0, 0, 0]. Workspace limits are also defined.
+
+```python
+# Define parameters
+r_p = 0.363; # Radius of platform
+r_b = 0.307; # Radius of base
+phi_p = 100; # Angle between platform joints
+phi_b=60; # Angle between base joints
+
+
+# Create Stewart Platform instance
+platform = StewartPlatform(r_b, phi_b, r_p, phi_p)
+pose = [0.0, 0.0, 0.18, 0, 0, 0]  # [x, y, z, roll, pitch, yaw] (removed 2 centimeters for platform thickness)
+leg_lengths = platform.getIK(pose)
+platform.plot()
+
+# Save data points
+base_points=platform.b_i
+platform_points=platform.p_i
+unit_vectors=platform.l_i_unit
+
+workspace_limits = [-0.05,0.05,-0.05,0.05,0.15,0.5] # [x_min, x_max, y_min, y_max, z_min, z_max]
+orientation_limits = [-5,5,-5,5,-5,5] # [roll_min, roll_max, pitch_min, pitch_max, yaw_min, yaw_max]
+```
+
+<img src="https://github.com/user-attachments/assets/b1b73134-3b91-4ef8-a833-21b2835d421f" width="400" />
 
 ### Step2: Calculation of Transmission Wrench Screws
-### Step3: Obtain the Output Twist Screws of the motion of the platform
-### Step4: figure out the Transmission Index when the TWS and OTS have been gotten
-### Step5: Fathom out the OATI when the configuration and position of the manipulator are constant
-### Step6: work out the GTIc when the configuration of the manipulator is given
-### Step7: seek the optimal configuration for manipulator based on the GTIc
+The TWS of the branched chain of the docking mechanism is a pure force whose axis passes through the center of the S pair and U pair (platform leg mechanical joints) simultaneously. And the TWS can be expressed as:
 
-## Class Methods Overview
-- **getIK(pose):** Computes inverse kinematics.
-- **getFK(starting_pose, lengths_desired):** Computes forward kinematics.
-- **getLocalConditionIndexT():** Calculates the local condition index of Transposed Jacobian
-- **getPlatformForces(F_actuators):** Computes platform forces from actuator forces.
-- **getSingularityWorkspace(workspace_limits,orientation_limits,N_pos,N_orient):** Evaluate singularities over a range of positions in the workspace.
-- **plot():** Plots the Stewart platform configuration.
+<img src="https://github.com/user-attachments/assets/841d083b-011d-4f63-900d-4c58249d1e52" width="250" />
+
+where l_i is the unit vector of the direction of thebranched chain, and r_i is the coordinate of arbitrary point on the branched chain with respect to the reference frame.
+
+```python
+ # Transmission wrench screw
+TWS=np.zeros([6,6])
+for i in range(6):
+  TWS[i,0:3]=unit_vectors[i,:]
+  TWS[i,3:6]=np.cross(platform_points[i], unit_vectors[i,:])
+```
+  
+### Step3: Obtain the Output Twist Screws of the motion of the platform
+When the Stewart manipulator is only driven by prismatic actuator and other prismatic actuators are locked, the Stewart manipulator becomes a single-DOF manipulator. [...] The five TWSs represented as TWS_j (j=1,...,6 and j=/i), become the constraint wrench of the moving platform, so the OTS_i is reciprocal to all the five TWSs; in this way, one can obtain the following equation:
+
+<img src="https://github.com/user-attachments/assets/932646f3-c3cc-4209-a8ee-cd397355eb5b" width="350" />
+
+Here, a kind of method to calculate the reciprocal screw of five given screws is introduced.
+If you are curious to learn more you can check out the paper itself as the method is a bit complex and long to explain it here. I highly suggest to check it out (:
+
+```python
+# Calculating Output Twist Screw (OTS)
+
+OTS=np.zeros([6,6])
+TWS_reciprocal=np.zeros([6,6]) # We need the reciprocal of the TWS
+A=np.zeros([6,6]) # Matrix for the reciproval of TWS
+
+# Compute the reciprocal of TWS
+for i in range(6):
+  TWS_reciprocal[i,0:3]=TWS[i,3:6]
+  TWS_reciprocal[i,3:6]=TWS[i,0:3]
+
+A=np.copy(TWS_reciprocal) # Matrix for the reciproval of TWS
+
+# Algorithm for calculating OTS
+for k in range(5, -1, -1):
+  A_without_row=np.copy(np.delete(A, k, axis = 0)) # Each k iteration remove a row from the matrix.
+  det_vect=np.zeros(6) # Determinant vector
+
+  for i in range(6):
+    A_local=np.copy(A_without_row)
+    A_local = np.delete(A_local, i, axis = 1) # Each i iteration remove i column
+    det_vect[i]=np.linalg.det(A_local) # Compute determinant of remaining 5x5 matrix
+
+  gain=1/np.linalg.norm(np.array([-det_vect[0],det_vect[1],-det_vect[2]])) # Calculate gain
+  OTS[k,:]=gain*np.array([-det_vect[0],det_vect[1],-det_vect[2],det_vect[3],-det_vect[4],det_vect[5]]) # Find OTS vector for each k iteration
+
+```
+You can check if the method has worked correctly by verifying the reciprocity of the two vectors. If the two vectors are reciprocal it means that their dot product will give 0 as a result.
+
+```python
+#TWSi=[w,v] this lays in each joint (force from legs)
+#OTSi=[w,v] this lays in the platform point center (velocity from legs on the P point)
+print("Check if OTS and TWS are reciprocal with j=/i \n")
+# if j =/ i
+j=0;
+i=1;
+print("Dot product of reciprocal vectors is 0")
+print("np.dot(TWS_reciprocal[j],OTS[i]): ",np.dot(TWS_reciprocal[j],OTS[i]),"\n")
+print("Dot product of non-reciprocal vectors is different from 0")
+print("np.dot(TWS_reciprocal[j],OTS[j]): ",np.dot(TWS_reciprocal[j],OTS[j]))
+```
+```
+Check if OTS and TWS are reciprocal with j=/i 
+
+Dot product of reciprocal vectors is 0
+np.dot(TWS_reciprocal[j],OTS[i]):  5.551115123125783e-17 
+
+Dot product of non-reciprocal vectors is different from 0
+np.dot(TWS_reciprocal[j],OTS[j]):  0.5920283360375702
+```
+
+### Step4: figure out the Transmission Index when the TWS and OTS have been gotten
+To calculate the Transmission Index TI we need to find the numerator and the denominator of such equation:
+
+<img src="https://github.com/user-attachments/assets/a886c4d2-c09a-40fb-a2fc-dec8b654ae14" width="350" />
+
+The numerator can be easily found with the dot product of TWS_j with OTS_j, for the denominator we can look directly for the max:
+
+<img src="https://github.com/user-attachments/assets/2f2a0c24-80ff-44fb-8add-ce8b91812031" width="350" />
+
+When the two screws , TWS and OTS , are given, their pitch, h1 and h2,are thought to be constant.
+
+To calculate d_max we firstly have to find the distance from the characteristic point of the TWS (joint platform attachment) to the axis line of the OTS. To do so we need to find the equation of the points laying on OTS vector.
+```python
+#### Calculating Transmission Index and returning the minimum
+
+w_OTS=np.copy(OTS[:,0:3]) # Unit vector of the rotational velocity of OTS
+v_OTS=np.copy(OTS[:,3:6]) # The dual of the unit screw of OTS
+d_max=np.zeros(6) # Stores max distance
+d=np.zeros([6,3]) # " where d is the vector from the characteristic point Pi to arbitrary point on the axis line of the OTSi"
+h1_vect=np.zeros(6) # pitch of the unit screw of TWS
+h2_vect=np.zeros(6) # pitch of the unit screw of OTS
+TI_vect=np.ones([6])*100 # Initializing Trasmission Index Vector
+
+# We need a point Laying on each OTS vector.
+# r x w_i = v_i - h*w_i (screw theory equation defining OTS)
+# h = v_i * w_i
+# r x w_i = v_i - (v_i * w_i) * w_i
+r_OTS = np.zeros([6,3]) # Points will contain the point laying on OTS vector
+c = np.zeros([6,3]) # Right side of cross product
+h = np.zeros(6) # Pitch of OTS[i]
+t=0; # Line parameter, value can be chosen freely (we will do cross products, the point has to just stay on the OTS vector)
+
+# Calculate TI for each joint
+for i in range(6):
+
+  # Calculate points laying on OTSi vector
+  # r x w_i = v_i - h*w_i
+  # h = v_i * w_i
+  # r x w_i = v_i - (v_i * w_i) * w_i
+  # a = np.cross(b,c)/np.dot(b,b)+t*b is a solution for all t. if a and c are orthogonal
+  # r_i = np.cross(w_OTS[i],c[i])/np.dot(w_OTS[i],w_OTS[i])+t*w_OTS[i] , t=0 --> r_i = np.cross(w_OTS[i],c[i])
+  # where c[i] = v_i - (v_i * w_i) * w_i
+  h[i]=np.dot(w_OTS[i],v_OTS[i]) # pitch of OTS[i]
+  c[i]= v_OTS[i] - h[i]*w_OTS[i] # right side of cross product r x w_i = v_i - (v_i * w_i) * w_i
+  r_OTS[i]=np.cross(w_OTS[i],c[i]) +t*w_OTS[i] # points laying on OTSi
+
+  # Calculate max perpendicular distance from each platform point to their respective OTS vector
+  d[i] = platform_points[i]-r_OTS[i] # " [...] where d is the vector from the characteristic point Pi to arbitrary point on the axis line of the OTSi"
+  d_max[i]=np.linalg.norm(np.cross(d[i],w_OTS[i])) # max perpendicular distance from Pi to the OTS vector
+
+  # Calculate unit pitch of TWSi and OTSi
+  h1_vect[i]=np.dot(TWS_reciprocal[i,0:3],TWS_reciprocal[i,3:6]) # unit pitch of TWSi
+  h2_vect[i]=np.dot(OTS[i,3:6],OTS[i,0:3]) # unit pitch of OTSi
+
+  # Calculating TI for each joint
+  numerator=np.abs(np.dot(TWS_reciprocal[i],OTS[i]))
+  denominator=np.sqrt((h1_vect[i] + h2_vect[i]) ** 2 + d_max[i] ** 2)
+  TI_vect[i]=numerator/denominator
+
+# Taking the minimum Transmission Index value.
+TI_min=np.min(TI_vect)
+```
+### Step5: Fathom out the OATI when the configuration and position of the manipulator are constant
+As we need to plot TI for every orientation in our workspace, we will create a function getTI which incorporates step2, step3 and step4.
+We can then calculate the orientation distribution of TI (OATI Orientation Avarage Transmission Index) in the whole discretized orientation workspace.
+
+```python
+position=pose[0:3] # pose from the definition of the Space Docking Mechanism
+# Define discretization space
+N=20 # Discretization
+roll_min, roll_max, pitch_min, pitch_max, yaw_min, yaw_max = orientation_limits # Extracting orientation_limits
+roll_vect = np.linspace(roll_min, roll_max, N)
+pitch_vect = np.linspace(pitch_min, pitch_max, N)
+yaw_vect = np.linspace(yaw_min, yaw_max, N)
+rr, pp, yy = np.meshgrid(roll_vect, pitch_vect, yaw_vect, indexing='ij')
+
+orientations = np.vstack([rr.ravel(), pp.ravel(), yy.ravel()]).T
+
+# orientation average transmission index (OATI)
+Holder = []
+for orient in orientations:
+    p_vect = np.hstack((position, orient))
+    platform.getIK(p_vect)
+    TI=getTI(platform)
+    Holder.append(np.append(orient, TI))
+
+Holder=np.array(Holder)
+```
+<img src="https://github.com/user-attachments/assets/8cf64809-3d11-4dbb-81cb-fb475668a7ce" width="500" />
+
+### Step6: work out the GTIc when the configuration of the manipulator is given
+We can then calculate the OAIT distribution in the position workspace
+
+```python
+N= 4 # Define discretization of space
+
+# Define discretization space for positions
+x_min, x_max, y_min, y_max, z_min, z_max = workspace_limits
+
+N_pos = N
+x_vect = np.linspace(x_min, x_max, N_pos)
+y_vect = np.linspace(y_min, y_max, N_pos)
+z_vect = np.linspace(z_min, z_max, N_pos)
+
+xx, yy, zz = np.meshgrid(x_vect, y_vect, z_vect, indexing='ij')
+positions = np.vstack([xx.ravel(), yy.ravel(), zz.ravel()]).T
+
+# Define discretization space for orientations
+roll_min, roll_max, pitch_min, pitch_max, yaw_min, yaw_max = orientation_limits
+N_orient = N
+roll_vect = np.linspace(roll_min, roll_max, N_orient)
+pitch_vect = np.linspace(pitch_min, pitch_max, N_orient)
+yaw_vect = np.linspace(yaw_min, yaw_max, N_orient)
+
+rr, pp, yy = np.meshgrid(roll_vect, pitch_vect, yaw_vect, indexing='ij')
+orientations = np.vstack([rr.ravel(), pp.ravel(), yy.ravel()]).T
+
+# Iterate through each position and each orientation
+Holder_mean_orient = []
+Holder = []
+for pos in positions:
+    Holder_TI = []
+
+    for orient in orientations:
+        p_vect = np.hstack((pos, orient))
+        platform.getIK(p_vect)
+        TI=getTI(platform)
+        Holder_TI.append(getTI(platform))# get every TI in orientations
+
+    OAIT=np.mean(Holder_TI)
+    Holder_mean_orient.append(OAIT) #AOTI
+    Holder.append(np.append(pos, OAIT))
+
+GTI=np.mean(Holder_mean_orient)
+Holder=np.array(Holder)
+```
+
+<img src="https://github.com/user-attachments/assets/e9c3fa76-40b8-4617-ab0f-475e7959a185" width="500" />
+
+### Step7: seek the optimal configuration for manipulator based on the GTIc
+We can write a function that takes calculates the Global Transmission Index for every try of platform variables.
+
+```python
+# define platform parameters
+phi_p_min, phi_p_max, phi_b_min, phi_b_max, r_b_min, r_b_max = [10,110,10,110,0.3,0.45] # define platform variables min and max
+N_plat = 6 # N x N x N   # define number of platform to test N_plat^3
+phi_p_vect = np.linspace(phi_p_min, phi_p_max, N_plat)
+phi_b_vect = np.linspace(phi_b_min, phi_b_max, N_plat)
+r_b_vect = np.linspace(r_b_min, r_b_max, N_plat)
+
+N_WS = 4 # discretize workspaces
+
+xx, yy, zz = np.meshgrid(phi_p_vect, phi_b_vect, r_b_vect, indexing='ij')
+platforms = np.vstack([xx.ravel(), yy.ravel(), zz.ravel()]).T
+tot=len(platforms)
+
+Holder = []
+i=1
+# Iterate through each platform
+for plat in platforms:
+  phi_p = plat[0]; # select platform angle
+  phi_b = plat[1];# select base angle
+  r_b = plat[2]; # select radius of base
+  r_p = 0.363; # fixed by constraints
+  platform = StewartPlatform(r_b, phi_b, r_p, phi_p) # create platform object
+  GTI = getGTI(platform,workspace_limits,orientation_limits,N_WS) # calculate GTI for platform object
+  Holder.append(np.append(plat, GTI))
+  print("number of platform tested:", i ,"/", tot)
+  i+=1
+
+Holder=np.array(Holder)
+```
+<img src="https://github.com/user-attachments/assets/5550d219-4a3e-44ad-81cb-296e47824e28" width="500" />
+
+We can notice the instability of the configuration when the base angle and the platform angle are equal (the platform is inherently unstable).
+
+We can also plot the GTI surfaces to better see the change.
+
+<img src="https://github.com/user-attachments/assets/44f34394-63e8-45ca-8ef2-1082a3808360" width="500" />
+
+
+We can then select the platform with the highest Global Transmission Index
+
+```python
+optimal = np.max(Holder[:,3]) # find max GTI
+config=np.where(Holder[:,3]==optimal)
+optimal_config=Holder[config[0][0],:] # select platform with max GTI
+
+phi_p = optimal_config[0]
+phi_b = optimal_config[1]
+r_b = optimal_config[2]
+r_p = 0.363
+N_WS = 5
+optimal_platform=StewartPlatform(r_b,phi_b,r_p,phi_p)
+optimal_platform.getIK([0,0,0.3,0,0,0])
+optimal_platform.plot()
+print("optimal phi_p", optimal_config[0])
+print("optimal phi_b", optimal_config[1])
+print("optimal r_b", optimal_config[2])
+print("GTI: ",optimal_config[3])
+```
+<img src="https://github.com/user-attachments/assets/25235323-ba21-466e-a8f3-45921b2b411e" width="400" />
+
+```
+optimal phi_p 30.0
+optimal phi_b 110.0
+optimal r_b 0.45
+GTI:  0.900375823640452
+```
+
