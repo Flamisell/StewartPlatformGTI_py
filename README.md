@@ -260,7 +260,7 @@ Holder=np.array(Holder)
 <img src="https://github.com/user-attachments/assets/8cf64809-3d11-4dbb-81cb-fb475668a7ce" width="500" />
 
 ### Step6: work out the GTIc when the configuration of the manipulator is given
-We can then calculate the OAIT distribution in the position workspace
+We can then calculate the OATI distribution in the position workspace
 
 ```python
 N= 4 # Define discretization of space
@@ -298,9 +298,9 @@ for pos in positions:
         TI=getTI(platform)
         Holder_TI.append(getTI(platform))# get every TI in orientations
 
-    OAIT=np.mean(Holder_TI)
-    Holder_mean_orient.append(OAIT) #AOTI
-    Holder.append(np.append(pos, OAIT))
+    OATI=np.mean(Holder_TI)
+    Holder_mean_orient.append(OATI) #AOTI
+    Holder.append(np.append(pos, OATI))
 
 GTI=np.mean(Holder_mean_orient)
 Holder=np.array(Holder)
